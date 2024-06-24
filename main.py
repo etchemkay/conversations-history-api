@@ -175,7 +175,7 @@ def delete_conversation(conversation_id: str):
     s3_utils.delete_json_from_s3(key)
     return {"message": "Conversation deleted"}
 
-@app.get("/conversation", response_model=List[Conversation])
+@app.get("/conversation", response_model=List[Conversation], response_model_exclude_none=True)
 def list_conversations(fields: Optional[str] = Query(None)):
     conversations = []
     try:
@@ -212,7 +212,7 @@ def create_block(conversation_id: str, block: Block):
 
     return block
 
-@app.get("/conversation/{conversation_id}/block/{block_id}", response_model=Block)
+@app.get("/conversation/{conversation_id}/block/{block_id}", response_model=Block, response_model_exclude_none=True)
 def read_block(conversation_id: str, block_id: str, fields: Optional[str] = Query(None)):
     key = get_s3_key(conversation_id, block_id)
     block = s3_utils.get_json_from_s3(key)
@@ -258,7 +258,7 @@ def create_response(conversation_id: str, block_id: str, partial_response: Parti
 
     return response
 
-@app.get("/conversation/{conversation_id}/block/{block_id}/response/{response_id}", response_model=Response)
+@app.get("/conversation/{conversation_id}/block/{block_id}/response/{response_id}", response_model=Response, response_model_exclude_none=True)
 def read_response(conversation_id: str, block_id: str, response_id: str, fields: Optional[str] = Query(None)):
     key = get_s3_key(conversation_id, block_id, response_id)
     response = s3_utils.get_json_from_s3(key)
