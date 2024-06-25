@@ -13,7 +13,7 @@ class Response(BaseModel):
     id: str
     source: str
     responseType: str
-    payload: Optional[Any]
+    payload: Optional[Any] = None
     requestedAt: Optional[int] = None
     respondedAt: Optional[int] = None
 

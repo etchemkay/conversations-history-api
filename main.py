@@ -37,10 +37,10 @@ s3_utils = S3Utils(bucket_name=bucket_name)
 
 default_conversation_fields = ['id', 'createdBy', 'createdAt', 'updatedAt', 'status', 'summaryText', 'summaryType', 'blockIds']
 default_block_fields = ['id', 'inputText', 'responseIds', 'createdBy', 'createdAt']
-default_response_fields = ['id', 'source', 'responseType', 'requestedAt']
+default_response_fields = ['id', 'source', 'responseType', 'requestedAt', 'payload']
 
 # Create a TTL cache with a maximum size of 100 items and a time-to-live of 300 seconds (5 minutes)
-cache = TTLCache(maxsize=2048, ttl=300000)
+entity_cache = TTLCache(maxsize=2048, ttl=300000)
 
 def get_s3_key(conversation_id, block_id=None, response_id=None):
     if response_id:
@@ -93,30 +93,41 @@ def filter_nested_fields(data, default_fields, additional_fields=None):
     return filtered_data
 
 def hash_key(*args, **kwargs):
-    return (tuple(args), tuple(sorted(kwargs.items())))
+    return tuple(args)
 
-@cached(cache, key=hash_key)
+def fetch_conversation(conversation_id: str, fields: str = ''):
+    key = get_s3_key(conversation_id)
+    conversation = s3_utils.get_json_from_s3(key)
+    print(fields)
+    if fields and ("blocks" in fields or any(field.startswith("blocks.") for field in fields.split(','))):
+        conversation['blocks'] = fetch_blocks(conversation_id, tuple(conversation.get('blockIds', [])), fields)
+    filtered_conversation = filter_nested_fields(conversation, default_conversation_fields, fields.split(',') if fields else [])
+
+    entity_cache[hash_key(conversation_id)] = filtered_conversation
+    return filtered_conversation
+
+
 def fetch_blocks(conversation_id: str, block_ids: Tuple[str, ...], fields: str = ''):
     blocks = []
     for block_id in block_ids:
         blocks.append(fetch_block(conversation_id, block_id, fields))
     return blocks
 
-@cached(cache, key=hash_key)
 def fetch_block(conversation_id: str, block_id: str, fields: str = ''):
     key = get_s3_key(conversation_id, block_id)
     block = s3_utils.get_json_from_s3(key)
     if fields and ("blocks.responses" in fields or any(field.startswith("blocks.responses.") for field in fields.split(','))):
-        block['responses'] = fetch_responses(conversation_id, block_id, tuple(block.get('responseIds', [])))
+        block['responses'] = fetch_responses(conversation_id, block_id, tuple(block.get('responseIds', [])), fields)
+    entity_cache[hash_key(conversation_id, block_id)] = block
     return block
 
-@cached(cache, key=hash_key)
-def fetch_responses(conversation_id: str, block_id: str, response_ids: Tuple[str, ...]):
+def fetch_responses(conversation_id: str, block_id: str, response_ids: Tuple[str, ...], fields: str = ''):
     responses = []
     for response_id in response_ids:
         key = get_s3_key(conversation_id, block_id, response_id)
         response = s3_utils.get_json_from_s3(key)
         responses.append(response)
+    entity_cache[hash_key(conversation_id, block_id), 'responses'] = responses
     return responses
 
 # CRUD operations for Conversation
@@ -161,14 +172,7 @@ def create_conversation(query: str, partial_conversation: PartialConversation = 
 @app.get("/conversation/{conversation_id}", response_model=Conversation, response_model_exclude_none=True)
 def read_conversation(conversation_id: str, fields: Optional[str] = Query(None)):
     try:
-        key = get_s3_key(conversation_id)
-        conversation = s3_utils.get_json_from_s3(key)
-
-        if fields and ("blocks" in fields or any(field.startswith("blocks.") for field in fields.split(','))):
-            conversation['blocks'] = fetch_blocks(conversation_id, tuple(conversation.get('blockIds', [])), fields)
-
-        filtered_conversation = filter_nested_fields(conversation, default_conversation_fields, fields.split(',') if fields else [])
-        return filtered_conversation
+        return fetch_conversation(conversation_id, fields)
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -238,7 +242,10 @@ def create_block(conversation_id: str, partial_block: PartialBlock = Body(...)):
 def read_block(conversation_id: str, block_id: str, fields: Optional[str] = Query(None)):
     key = get_s3_key(conversation_id, block_id)
     block = s3_utils.get_json_from_s3(key)
-    block['responses'] = fetch_responses(conversation_id, block_id, tuple(block.get('responseIds', [])))
+
+    if fields and ("responses" in fields or any(field.startswith("responses.") for field in fields.split(','))):
+        block['responses'] = fetch_responses(conversation_id, block_id, tuple(block.get('responseIds', [])), fields)
+
     filtered_block = filter_nested_fields(block, default_block_fields, fields.split(',') if fields else [])
     return filtered_block
 
@@ -274,9 +281,11 @@ def create_response(conversation_id: str, block_id: str, partial_response: Parti
 
     block = Block(**fetch_block(conversation_id, block_id, ''))
     block.responseIds.append(response.id)
+    entity_cache.pop(hash_key(conversation_id, block_id), None)
 
     key = get_s3_key(conversation_id, block_id)
     s3_utils.put_json_to_s3(key, block.dict())
+    fetch_block(conversation_id, block_id, '')
 
     return response
 
