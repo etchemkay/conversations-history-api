@@ -39,6 +39,12 @@ class Block(BaseModel):
     class Config:
         from_attributes = True
 
+
+class PartialBlock(BaseModel):
+    inputText: str
+    createdBy: Optional[User] = None
+    createdAt: Optional[int] = None
+
 class Conversation(BaseModel):
     id: str
     createdBy: User
